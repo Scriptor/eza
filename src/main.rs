@@ -6,8 +6,7 @@ extern crate rocket;
 use rocket::State;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io::prelude::*;
-use std::io::{self, BufRead, BufWriter, Result, SeekFrom, Write};
+use std::io::{self, BufRead, BufWriter, Result, Write};
 use std::sync::RwLock;
 
 #[get("/")]
@@ -26,30 +25,12 @@ fn persist_entry(db: &DBState, key: &String, value: &String) -> Result<()> {
     w.flush()
 }
 
-fn lookup_entry<'a>(db: &'a DBState, key: &String) -> Option<String> {
-    let mut file = &db.file;
-    file.seek(SeekFrom::Start(0)).unwrap();
-    let buf = io::BufReader::new(file);
-    let mut result = None;
-    for line in buf.lines() {
-        let entry = line.unwrap();
-        println!("line: {}", &entry);
-        let parts: Vec<&str> = entry.split(":").collect();
-        let line_key = parts[0];
-        if key == line_key {
-            result = Some(String::from(parts[1]));
-        }
-    }
-    result
-}
-
 #[get("/get/<key>")]
 fn get(state: State<RwLock<DBState>>, key: String) -> String {
     let state = state.read().unwrap();
-    let val = lookup_entry(&state, &key);
-    match val {
+    match state.map.get(&key) {
         Some(s) => format!("Value is: {}", s),
-        None => String::from("Not found!"),
+        _ => String::from("Not found!"),
     }
 }
 
@@ -62,14 +43,28 @@ fn set(state: State<RwLock<DBState>>, key: String, value: String) -> String {
     result_str
 }
 
+fn load_db(file: &File) -> HashMap<String, String> {
+    let mut map: HashMap<String, String> = HashMap::new();
+    let buf = io::BufReader::new(file);
+    for line in buf.lines() {
+        let entry = line.unwrap();
+        println!("line: {}", &entry);
+        let parts: Vec<&str> = entry.split(":").collect();
+        if parts.len() == 2 {
+            map.insert(String::from(parts[0]), String::from(parts[1]));
+        }
+    }
+    map
+}
+
 fn main() {
-    let memory_db: HashMap<String, String> = HashMap::new();
     let file = OpenOptions::new()
         .create(true)
         .read(true)
         .append(true)
         .open("data.db")
         .unwrap();
+    let memory_db = load_db(&file);
 
     rocket::ignite()
         .manage(RwLock::new(DBState {
