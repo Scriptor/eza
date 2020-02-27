@@ -23,7 +23,6 @@ mod db {
         let buf = io::BufReader::new(&file);
         for line in buf.lines() {
             let entry = line.unwrap();
-            println!("line: {}", &entry);
             let parts: Vec<&str> = entry.split(":").collect();
             if parts.len() == 2 {
                 map.insert(String::from(parts[0]), String::from(parts[1]));
