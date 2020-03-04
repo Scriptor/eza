@@ -11,7 +11,7 @@ use std::sync::RwLock;
 mod db {
     use std::collections::HashMap;
     use std::fs::File;
-    use std::io::{self, BufRead, BufWriter, Result, Write};
+    use std::io::{self, BufRead, BufWriter, Write};
 
     pub struct DBState {
         pub map: super::HashMap<String, String>,
@@ -34,23 +34,27 @@ mod db {
         }
     }
 
-    fn persist_entry(db: &DBState, key: &String, value: &String) -> Result<()> {
+    fn persist_entry(db: &DBState, key: &String, value: &String) -> io::Result<()> {
         let mut w = BufWriter::new(&db.file);
         writeln!(w, "{}:{}", key, value).unwrap();
         w.flush()
     }
 
-    pub fn set(db: &mut DBState, key: String, value: String) -> String {
+    pub fn set(db: &mut DBState, key: String, value: String) -> Result<String, String> {
         let result_str = format!("Set key: {} to value: {}", key, value);
-        persist_entry(db, &key, &value).unwrap();
-        db.map.insert(key, value);
-        result_str
+        match persist_entry(db, &key, &value) {
+            Ok(_) => {
+                db.map.insert(key, value);
+                Ok(result_str)
+            }
+            _ => Err(String::from("Failed to write")),
+        }
     }
 
-    pub fn get(db: &DBState, key: String) -> String {
+    pub fn get(db: &DBState, key: String) -> Result<String, String> {
         match db.map.get(&key) {
-            Some(s) => s.to_string(),
-            _ => String::from("Not found!"),
+            Some(s) => Ok(s.to_string()),
+            _ => Err(String::from("Not found!")),
         }
     }
 
@@ -72,16 +76,16 @@ mod db {
         #[test]
         fn test_set() {
             let mut db = setup();
-            let res = set(&mut db, String::from("hello"), String::from("world"));
+            let res = set(&mut db, String::from("hello"), String::from("world")).unwrap();
             assert_eq!(res, "Set key: hello to value: world");
         }
 
         #[test]
         fn test_get() {
             let mut db = setup();
-            set(&mut db, String::from("hello"), String::from("world"));
+            set(&mut db, String::from("hello"), String::from("world")).unwrap();
             let db = db;
-            let res = get(&db, String::from("hello"));
+            let res = get(&db, String::from("hello")).unwrap();
             assert_eq!(res, String::from("world"));
         }
     }
@@ -95,13 +99,13 @@ fn index() -> &'static str {
 #[get("/get/<key>")]
 fn get(state: State<RwLock<db::DBState>>, key: String) -> String {
     let db = state.read().unwrap();
-    db::get(&db, key)
+    db::get(&db, key).unwrap()
 }
 
 #[get("/set/<key>/<value>")]
 fn set(state: State<RwLock<db::DBState>>, key: String, value: String) -> String {
     let mut db = state.write().unwrap();
-    db::set(&mut db, key, value)
+    db::set(&mut db, key, value).unwrap()
 }
 
 fn main() {
