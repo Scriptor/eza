@@ -53,6 +53,38 @@ mod db {
             _ => String::from("Not found!"),
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::fs::OpenOptions;
+
+        fn setup() -> DBState {
+            let file = OpenOptions::new()
+                .create(true)
+                .read(true)
+                .append(true)
+                .open("test_data.db")
+                .unwrap();
+            initialize_db(file)
+        }
+
+        #[test]
+        fn test_set() {
+            let mut db = setup();
+            let res = set(&mut db, String::from("hello"), String::from("world"));
+            assert_eq!(res, "Set key: hello to value: world");
+        }
+
+        #[test]
+        fn test_get() {
+            let mut db = setup();
+            set(&mut db, String::from("hello"), String::from("world"));
+            let db = db;
+            let res = get(&db, String::from("hello"));
+            assert_eq!(res, String::from("world"));
+        }
+    }
 }
 
 #[get("/")]
