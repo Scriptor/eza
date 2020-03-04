@@ -49,7 +49,7 @@ mod db {
 
     pub fn get(db: &DBState, key: String) -> String {
         match db.map.get(&key) {
-            Some(s) => format!("Value is: {}", s),
+            Some(s) => s.to_string(),
             _ => String::from("Not found!"),
         }
     }
