@@ -9,3 +9,4 @@ edition = "2018"
 [dependencies]
 serde = "1.0.104"
 rocket = "0.4.2"
+uuid= { version = "0.8", features = ["v4"] }
