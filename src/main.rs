@@ -51,13 +51,32 @@ mod db {
     }
 
     pub fn initialize_db(db_file: File, wal_file: File) -> DBState {
-        let mut map: HashMap<String, String> = HashMap::new();
-        let buf = io::BufReader::new(&db_file);
-        for line in buf.lines() {
+        let mut txs = HashMap::new();
+        let wal_buf = io::BufReader::new(&wal_file);
+        for line in wal_buf.lines() {
             let entry = line.unwrap();
             let parts: Vec<&str> = entry.split(":").collect();
             if parts.len() == 2 {
-                map.insert(String::from(parts[0]), String::from(parts[1]));
+                let tx_id = Uuid::parse_str(parts[0]).unwrap();
+                if parts[1] == "true" {
+                    txs.insert(tx_id, true);
+                } else {
+                    txs.insert(tx_id, false);
+                }
+            }
+        }
+
+        let mut map: HashMap<String, String> = HashMap::new();
+        let db_buf = io::BufReader::new(&db_file);
+        for line in db_buf.lines() {
+            let entry = line.unwrap();
+            let parts: Vec<&str> = entry.split(":").collect();
+            if parts.len() == 3 {
+                let tx_id = Uuid::parse_str(parts[2]).unwrap();
+                println!("{}", *txs.get(&tx_id).unwrap());
+                if *txs.get(&tx_id).unwrap() {
+                    map.insert(String::from(parts[0]), String::from(parts[1]));
+                }
             }
         }
         DBState {
@@ -67,9 +86,9 @@ mod db {
         }
     }
 
-    fn persist_entry(db: &DBState, key: &String, value: &String) -> io::Result<()> {
+    fn persist_entry(db: &DBState, key: &String, value: &String, tx: &WalTx) -> io::Result<()> {
         let mut w = BufWriter::new(&db.db);
-        writeln!(w, "{}:{}", key, value).unwrap();
+        writeln!(w, "{}:{}:{}", key, value, tx.id).unwrap();
         w.flush()
     }
 
@@ -79,7 +98,7 @@ mod db {
         let tx = wal_new_tx(&db);
         wal_append_set(&db, &tx, &key, &value).unwrap();
         let result_str = format!("Set key: {} to value: {}", key, value);
-        let result = match persist_entry(db, &key, &value) {
+        let result = match persist_entry(db, &key, &value, &tx) {
             Ok(_) => {
                 wal_commit(&db, &tx).unwrap();
                 db.map.insert(key, value);
@@ -95,12 +114,12 @@ mod db {
         let mut result_str = "".to_string();
         for (key, value) in keyvals.iter() {
             wal_append_set(&db, &tx, &key, &value).unwrap();
-            persist_entry(db, &key, &value).unwrap();
+            persist_entry(db, &key, &value, &tx).unwrap();
             db.map.insert(key.to_string(), value.to_string());
-            wal_commit(&db, &tx).unwrap();
             let partial_result = format!("Set key: {} to value: {};", key, value);
             result_str.push_str(&partial_result);
         }
+        wal_commit(&db, &tx).unwrap();
         Ok(result_str)
     }
 
@@ -127,7 +146,23 @@ mod db {
                 .create(true)
                 .read(true)
                 .append(true)
-                .open("test_data.db")
+                .open("test_wal.db")
+                .unwrap();
+            initialize_db(db_file, wal_file)
+        }
+
+        fn setup_crashed() -> DBState {
+            let db_file = OpenOptions::new()
+                .create(true)
+                .read(true)
+                .append(true)
+                .open("crashed_test_data.db")
+                .unwrap();
+            let wal_file = OpenOptions::new()
+                .create(true)
+                .read(true)
+                .append(true)
+                .open("crashed_test_wal.db")
                 .unwrap();
             initialize_db(db_file, wal_file)
         }
@@ -157,6 +192,15 @@ mod db {
             let db = db;
             let res = get(&db, String::from("hello")).unwrap();
             assert_eq!(res, String::from("world"));
+        }
+
+        #[test]
+        fn test_crashed() {
+            let db = setup_crashed();
+            assert_eq!(
+                get(&db, String::from("hello")),
+                Err("Not found!".to_string())
+            );
         }
     }
 }
@@ -189,7 +233,7 @@ fn main() {
         .create(true)
         .read(true)
         .append(true)
-        .open("data.db")
+        .open("wal.db")
         .unwrap();
     let db = db::initialize_db(db_file, wal_file);
 
