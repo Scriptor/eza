@@ -91,10 +91,13 @@ mod db {
     }
 
     pub fn multi_set(db: &mut DBState, keyvals: HashMap<String, String>) -> Result<String, String> {
+        let tx = wal_new_tx(&db);
         let mut result_str = "".to_string();
         for (key, value) in keyvals.iter() {
+            wal_append_set(&db, &tx, &key, &value).unwrap();
             persist_entry(db, &key, &value).unwrap();
             db.map.insert(key.to_string(), value.to_string());
+            wal_commit(&db, &tx).unwrap();
             let partial_result = format!("Set key: {} to value: {};", key, value);
             result_str.push_str(&partial_result);
         }
