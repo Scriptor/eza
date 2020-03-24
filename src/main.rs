@@ -90,6 +90,17 @@ mod db {
         result
     }
 
+    pub fn multi_set(db: &mut DBState, keyvals: HashMap<String, String>) -> Result<String, String> {
+        let mut result_str = "".to_string();
+        for (key, value) in keyvals.iter() {
+            persist_entry(db, &key, &value).unwrap();
+            db.map.insert(key.to_string(), value.to_string());
+            let partial_result = format!("Set key: {} to value: {};", key, value);
+            result_str.push_str(&partial_result);
+        }
+        Ok(result_str)
+    }
+
     pub fn get(db: &DBState, key: String) -> Result<String, String> {
         match db.map.get(&key) {
             Some(s) => Ok(s.to_string()),
@@ -123,6 +134,17 @@ mod db {
             let mut db = setup();
             let res = set(&mut db, String::from("hello"), String::from("world")).unwrap();
             assert_eq!(res, "Set key: hello to value: world");
+        }
+
+        #[test]
+        fn test_multi_set() {
+            let mut db = setup();
+            let mut keyvals = HashMap::new();
+            keyvals.insert("hello".to_string(), "world".to_string());
+            keyvals.insert("foo".to_string(), "bar".to_string());
+            multi_set(&mut db, keyvals).unwrap();
+            assert_eq!(get(&db, "hello".to_string()).unwrap(), "world".to_string());
+            assert_eq!(get(&db, "foo".to_string()).unwrap(), "bar".to_string());
         }
 
         #[test]
