@@ -1,5 +1,4 @@
 #![feature(proc_macro_hygiene, decl_macro)]
-
 #[macro_use]
 extern crate rocket;
 
@@ -9,14 +8,16 @@ use std::fs::{File, OpenOptions};
 use std::sync::RwLock;
 
 mod db {
+    use rocksdb::{IteratorMode, DB};
     use std::collections::HashMap;
     use std::fs::File;
     use std::io::{self, BufRead, BufWriter, Write};
+    use std::str;
     use uuid::Uuid;
 
     pub struct DBState {
         pub map: super::HashMap<String, String>,
-        pub db: super::File,
+        pub db: DB,
         pub wal: super::File,
     }
 
@@ -50,7 +51,7 @@ mod db {
         w.flush()
     }
 
-    pub fn initialize_db(db_file: File, wal_file: File) -> DBState {
+    pub fn initialize_db(db_path: String, wal_file: File) -> DBState {
         let mut txs = HashMap::new();
         let wal_buf = io::BufReader::new(&wal_file);
         for line in wal_buf.lines() {
@@ -66,30 +67,33 @@ mod db {
             }
         }
 
+        let db = DB::open_default(db_path).unwrap();
+        let db_iter = db.iterator(IteratorMode::Start);
         let mut map: HashMap<String, String> = HashMap::new();
-        let db_buf = io::BufReader::new(&db_file);
-        for line in db_buf.lines() {
-            let entry = line.unwrap();
-            let parts: Vec<&str> = entry.split(":").collect();
-            if parts.len() == 3 {
-                let tx_id = Uuid::parse_str(parts[2]).unwrap();
-                println!("{}", *txs.get(&tx_id).unwrap());
-                if *txs.get(&tx_id).unwrap() {
-                    map.insert(String::from(parts[0]), String::from(parts[1]));
-                }
+        for (key, value) in db_iter {
+            let data = String::from(str::from_utf8(&*value).unwrap());
+            let parts: Vec<&str> = data.split(":").collect();
+            let tx_id = Uuid::parse_str(parts[0]).unwrap();
+            let value = String::from(parts[1]);
+            if *txs.get(&tx_id).unwrap() {
+                map.insert(String::from(str::from_utf8(&*key).unwrap()), value);
             }
         }
         DBState {
             map: map,
             wal: wal_file,
-            db: db_file,
+            db: db,
         }
     }
 
-    fn persist_entry(db: &DBState, key: &String, value: &String, tx: &WalTx) -> io::Result<()> {
-        let mut w = BufWriter::new(&db.db);
-        writeln!(w, "{}:{}:{}", key, value, tx.id).unwrap();
-        w.flush()
+    fn persist_entry(
+        db: &DBState,
+        key: &String,
+        value: &String,
+        tx: &WalTx,
+    ) -> Result<(), rocksdb::Error> {
+        let data = format!("{}:{}", tx.id, value);
+        db.db.put(key.as_bytes(), data.as_bytes())
     }
 
     pub fn set(db: &mut DBState, key: String, value: String) -> Result<String, String> {
@@ -136,35 +140,25 @@ mod db {
         use std::fs::OpenOptions;
 
         fn setup() -> DBState {
-            let db_file = OpenOptions::new()
-                .create(true)
-                .read(true)
-                .append(true)
-                .open("test_data.db")
-                .unwrap();
+            let db_path = "test_data".to_string();
             let wal_file = OpenOptions::new()
                 .create(true)
                 .read(true)
                 .append(true)
                 .open("test_wal.db")
                 .unwrap();
-            initialize_db(db_file, wal_file)
+            initialize_db(db_path, wal_file)
         }
 
         fn setup_crashed() -> DBState {
-            let db_file = OpenOptions::new()
-                .create(true)
-                .read(true)
-                .append(true)
-                .open("crashed_test_data.db")
-                .unwrap();
+            let db_path = "crashed_test_data".to_string();
             let wal_file = OpenOptions::new()
                 .create(true)
                 .read(true)
                 .append(true)
                 .open("crashed_test_wal.db")
                 .unwrap();
-            initialize_db(db_file, wal_file)
+            initialize_db(db_path, wal_file)
         }
 
         #[test]
@@ -223,19 +217,14 @@ fn set(state: State<RwLock<db::DBState>>, key: String, value: String) -> String 
 }
 
 fn main() {
-    let db_file = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .append(true)
-        .open("data.db")
-        .unwrap();
+    let db_path = "data".to_string();
     let wal_file = OpenOptions::new()
         .create(true)
         .read(true)
         .append(true)
         .open("wal.db")
         .unwrap();
-    let db = db::initialize_db(db_file, wal_file);
+    let db = db::initialize_db(db_path, wal_file);
 
     rocket::ignite()
         .manage(RwLock::new(db))
