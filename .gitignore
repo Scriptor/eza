@@ -2,3 +2,7 @@
 **/*.rs.bk
 test_data.db
 data.db
+data/
+test_data/
+test_wal.db
+wal.db
