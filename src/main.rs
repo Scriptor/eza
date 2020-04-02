@@ -18,7 +18,8 @@ mod db {
     //use uuid::Uuid;
 
     pub struct DBState {
-        pub map: super::HashMap<String, String>,
+        pub map: HashMap<String, String>,
+        pub txs: HashMap<String, bool>, // TODO: Commit state should be enum
         pub db: DB,
         pub wal: super::File,
     }
