@@ -28,7 +28,7 @@ mod db {
         id: String,
     }
 
-    pub fn wal_new_tx<'a>(db: &'a DBState) -> WalTx {
+    pub fn wal_new_tx<'a>(db: &'a mut DBState) -> WalTx {
         let id = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("Time went backwards.")
@@ -37,6 +37,7 @@ mod db {
         let tx = WalTx { id: id };
         let mut w = BufWriter::new(&db.wal);
         writeln!(w, "{}:{}", tx.id, false).unwrap();
+        db.txs.insert(tx.id.clone(), false);
         w.flush().unwrap();
         tx
     }
@@ -52,9 +53,10 @@ mod db {
         w.flush()
     }
 
-    pub fn wal_commit<'a>(db: &DBState, tx: &WalTx) -> io::Result<()> {
+    pub fn wal_commit<'a>(db: &mut DBState, tx: &WalTx) -> io::Result<()> {
         let mut w = BufWriter::new(&db.wal);
         writeln!(w, "{}:{}", tx.id, true).unwrap();
+        db.txs.insert(tx.id.clone(), true);
         w.flush()
     }
 
@@ -78,16 +80,17 @@ mod db {
         let db_iter = db.iterator(IteratorMode::Start);
         let mut map: HashMap<String, String> = HashMap::new();
         for (key, value) in db_iter {
-            let data = String::from(str::from_utf8(&*value).unwrap());
-            let parts: Vec<&str> = data.split(":").collect();
-            let tx_id = parts[0];
-            let value = String::from(parts[1]);
-            if *txs.get(tx_id).unwrap() {
+            let data = String::from(str::from_utf8(&*key).unwrap());
+            let tx_id = data_tx_id(&data);
+            let value = String::from(bytes_to_string(&value));
+            println!("Loading {} -> {}", data, value);
+            if *txs.get(&tx_id).unwrap() {
                 map.insert(String::from(str::from_utf8(&*key).unwrap()), value);
             }
         }
         DBState {
             map: map,
+            txs: txs,
             wal: wal_file,
             db: db,
         }
@@ -99,33 +102,33 @@ mod db {
         value: &String,
         tx: &WalTx,
     ) -> Result<(), rocksdb::Error> {
-        let data = format!("{}:{}", tx.id, value);
-        db.db.put(key.as_bytes(), data.as_bytes())
+        let key = format!("{}:{}", key, tx.id);
+        db.db.put(key.as_bytes(), value.as_bytes())
     }
 
     fn bytes_to_string(v: &[u8]) -> String {
         String::from(str::from_utf8(v).unwrap())
     }
 
-    fn data_tx_id(val: String) -> String {
-        let parts: Vec<&str> = val.split(":").collect();
-        parts[0].to_owned()
-    }
-
-    fn data_value(val: String) -> String {
+    fn data_tx_id(val: &String) -> String {
         let parts: Vec<&str> = val.split(":").collect();
         parts[1].to_owned()
     }
 
-    pub fn set(db: &mut DBState, key: String, value: String) -> Result<String, String> {
+    fn data_value(val: &String) -> String {
+        let parts: Vec<&str> = val.split(":").collect();
+        parts[0].to_owned()
+    }
+
+    pub fn set(mut db: &mut DBState, key: String, value: String) -> Result<String, String> {
         // Create an uncommitted WAL record and add a entry for each IO change
         // Commit after last entry added
-        let tx = wal_new_tx(&db);
+        let tx = wal_new_tx(&mut db);
         wal_append_set(&db, &tx, &key, &value).unwrap();
         let result_str = format!("Set key: {} to value: {}", key, value);
         let result = match persist_entry(db, &key, &value, &tx) {
             Ok(_) => {
-                wal_commit(&db, &tx).unwrap();
+                wal_commit(&mut db, &tx).unwrap();
                 db.map.insert(key, value);
                 Ok(result_str)
             }
@@ -134,8 +137,11 @@ mod db {
         result
     }
 
-    pub fn multi_set(db: &mut DBState, keyvals: HashMap<String, String>) -> Result<String, String> {
-        let tx = wal_new_tx(&db);
+    pub fn multi_set(
+        mut db: &mut DBState,
+        keyvals: HashMap<String, String>,
+    ) -> Result<String, String> {
+        let tx = wal_new_tx(db);
         let mut result_str = "".to_string();
         for (key, value) in keyvals.iter() {
             wal_append_set(&db, &tx, &key, &value).unwrap();
@@ -144,24 +150,39 @@ mod db {
             let partial_result = format!("Set key: {} to value: {};", key, value);
             result_str.push_str(&partial_result);
         }
-        wal_commit(&db, &tx).unwrap();
+        wal_commit(&mut db, &tx).unwrap();
         Ok(result_str)
     }
 
-    pub fn get(db: &DBState, key: String) -> Result<String, String> {
+    pub fn get(mut db: &mut DBState, key: String) -> Result<String, String> {
+        let tx = wal_new_tx(db);
+
+        println!("Looking for: {}", key);
+        let null_key = format!("{}:9", key);
         let db_iter = db
             .db
-            .iterator(IteratorMode::From(key.as_bytes(), Direction::Reverse));
+            .iterator(IteratorMode::From(null_key.as_bytes(), Direction::Reverse));
         for (k, value) in db_iter {
             let k = bytes_to_string(&k);
 
-            if key == k {
-                let value = data_value(bytes_to_string(&value));
+            let write_tx_id = data_tx_id(&k);
+            let k = data_value(&k);
+            println!("Found: {} with tx_id: {}", k, write_tx_id);
+            // TODO: Handle the case where the write tx is PENDING,
+            //       may need a mutex
+            let is_committed = match db.txs.get(&write_tx_id) {
+                Some(b) => *b,
+                _ => false,
+            };
+
+            if key == k && (write_tx_id < tx.id && is_committed) {
+                let value = bytes_to_string(&value);
                 println!("{}", value);
                 return Ok(value);
             }
         }
 
+        wal_commit(&mut db, &tx).unwrap();
         Err(String::from("Not found!"))
     }
 
@@ -244,8 +265,8 @@ fn index() -> &'static str {
 
 #[get("/get/<key>")]
 fn get(state: State<RwLock<db::DBState>>, key: String) -> String {
-    let db = state.read().unwrap();
-    db::get(&db, key).unwrap()
+    let mut db = state.write().unwrap();
+    db::get(&mut db, key).unwrap()
 }
 
 #[get("/set/<key>/<value>")]
