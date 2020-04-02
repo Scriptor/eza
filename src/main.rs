@@ -13,7 +13,9 @@ mod db {
     use std::fs::File;
     use std::io::{self, BufRead, BufWriter, Write};
     use std::str;
-    use uuid::Uuid;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    // Uuid may be reintroduced later with better tx id's
+    //use uuid::Uuid;
 
     pub struct DBState {
         pub map: super::HashMap<String, String>,
@@ -22,14 +24,18 @@ mod db {
     }
 
     pub struct WalTx {
-        id: Uuid,
+        id: String,
     }
 
     pub fn wal_new_tx<'a>(db: &'a DBState) -> WalTx {
-        let id = Uuid::new_v4();
+        let id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards.")
+            .as_nanos()
+            .to_string();
         let tx = WalTx { id: id };
         let mut w = BufWriter::new(&db.wal);
-        writeln!(w, "{}:{}", id, false).unwrap();
+        writeln!(w, "{}:{}", tx.id, false).unwrap();
         w.flush().unwrap();
         tx
     }
@@ -58,7 +64,7 @@ mod db {
             let entry = line.unwrap();
             let parts: Vec<&str> = entry.split(":").collect();
             if parts.len() == 2 {
-                let tx_id = Uuid::parse_str(parts[0]).unwrap();
+                let tx_id = parts[0].to_owned();
                 if parts[1] == "true" {
                     txs.insert(tx_id, true);
                 } else {
@@ -73,9 +79,9 @@ mod db {
         for (key, value) in db_iter {
             let data = String::from(str::from_utf8(&*value).unwrap());
             let parts: Vec<&str> = data.split(":").collect();
-            let tx_id = Uuid::parse_str(parts[0]).unwrap();
+            let tx_id = parts[0];
             let value = String::from(parts[1]);
-            if *txs.get(&tx_id).unwrap() {
+            if *txs.get(tx_id).unwrap() {
                 map.insert(String::from(str::from_utf8(&*key).unwrap()), value);
             }
         }
