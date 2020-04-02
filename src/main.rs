@@ -8,7 +8,7 @@ use std::fs::{File, OpenOptions};
 use std::sync::RwLock;
 
 mod db {
-    use rocksdb::{IteratorMode, DB};
+    use rocksdb::{Direction, IteratorMode, DB};
     use std::collections::HashMap;
     use std::fs::File;
     use std::io::{self, BufRead, BufWriter, Write};
@@ -102,6 +102,20 @@ mod db {
         db.db.put(key.as_bytes(), data.as_bytes())
     }
 
+    fn bytes_to_string(v: &[u8]) -> String {
+        String::from(str::from_utf8(v).unwrap())
+    }
+
+    fn data_tx_id(val: String) -> String {
+        let parts: Vec<&str> = val.split(":").collect();
+        parts[0].to_owned()
+    }
+
+    fn data_value(val: String) -> String {
+        let parts: Vec<&str> = val.split(":").collect();
+        parts[1].to_owned()
+    }
+
     pub fn set(db: &mut DBState, key: String, value: String) -> Result<String, String> {
         // Create an uncommitted WAL record and add a entry for each IO change
         // Commit after last entry added
@@ -134,6 +148,23 @@ mod db {
     }
 
     pub fn get(db: &DBState, key: String) -> Result<String, String> {
+        let db_iter = db
+            .db
+            .iterator(IteratorMode::From(key.as_bytes(), Direction::Reverse));
+        for (k, value) in db_iter {
+            let k = bytes_to_string(&k);
+
+            if key == k {
+                let value = data_value(bytes_to_string(&value));
+                println!("{}", value);
+                return Ok(value);
+            }
+        }
+
+        Err(String::from("Not found!"))
+    }
+
+    pub fn mem_get(db: &DBState, key: String) -> Result<String, String> {
         match db.map.get(&key) {
             Some(s) => Ok(s.to_string()),
             _ => Err(String::from("Not found!")),
