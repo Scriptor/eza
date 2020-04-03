@@ -5,13 +5,15 @@ barebones log-structured database someday.
 Currently it's a basic KV store that provides the ability to set a key, set
 multiple keys, and look up the value of a key.
 
-The goal is to eventually be ACID-compliant, with the following current status:
+It is currently ACID-compliant (for some definition of ACID compliance :) ):
 
 Atomic     - Currently supported with a primitive write-ahead log that is checked to
              see which transactions have successfully committed.
 Consistent - Provided mostly by accident since there's not much that can be
              inconsistent right now.
-Isolation  - Not implemented, but coming up soon.
+Isolation  - A rough MVCC implementation offers snapshot isolation. Remaining
+             work here is adding a 'PENDING' transaction state and maybe storing
+             the transaction info itself on disk rather than keeping it in memory.
 Durability - Uses RocksDB for the storage engine to make writes durable.
 
 ## Rationale
