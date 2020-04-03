@@ -84,9 +84,10 @@ mod db {
             let tx_id = data_tx_id(&data);
             let value = String::from(bytes_to_string(&value));
             println!("Loading {} -> {}", data, value);
-            if *txs.get(&tx_id).unwrap() {
-                map.insert(String::from(str::from_utf8(&*key).unwrap()), value);
-            }
+            match txs.get(&tx_id) {
+                Some(true) => map.insert(String::from(str::from_utf8(&*key).unwrap()), value),
+                _ => None,
+            };
         }
         DBState {
             map: map,
@@ -196,7 +197,8 @@ mod db {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use std::fs::OpenOptions;
+        use rocksdb::Options;
+        use std::fs::{self, OpenOptions};
 
         fn setup() -> DBState {
             let db_path = "test_data".to_string();
@@ -210,6 +212,26 @@ mod db {
         }
 
         fn setup_crashed() -> DBState {
+            {
+                // Create temporary handle to the WAL file so that we can
+                // delete it after finishing the setup. This emulates a
+                // "crash" since it appears that nothing was written to the WAL.
+                let db_path = "crashed_test_data".to_string();
+                let setup_wal_file = OpenOptions::new()
+                    .create(true)
+                    .read(true)
+                    .append(true)
+                    .open("crashed_test_wal.db")
+                    .unwrap();
+                let mut setup_state = initialize_db(db_path, setup_wal_file);
+                // keyvals that are part of the failed (i.e. crashed) write
+                let mut crashed_keyvals = HashMap::new();
+                crashed_keyvals.insert("hello".to_string(), "world".to_string());
+                crashed_keyvals.insert("foo".to_string(), "bar".to_string());
+                multi_set(&mut setup_state, crashed_keyvals).expect("Cannot set multiple keys.");
+                fs::remove_file("crashed_test_wal.db").expect("Can't delete crashed wal file.");
+            }
+
             let db_path = "crashed_test_data".to_string();
             let wal_file = OpenOptions::new()
                 .create(true)
@@ -217,7 +239,20 @@ mod db {
                 .append(true)
                 .open("crashed_test_wal.db")
                 .unwrap();
-            initialize_db(db_path, wal_file)
+            let mut state = initialize_db(db_path, wal_file);
+            // The following multiset should work fine so these keyvals are
+            // considered 'good'
+            let mut good_keyvals = HashMap::new();
+            good_keyvals.insert("good_hello".to_string(), "good_world".to_string());
+            good_keyvals.insert("good_foo".to_string(), "good_bar".to_string());
+            multi_set(&mut state, good_keyvals).expect("Cannot set multiple keys.");
+            state
+        }
+
+        fn cleanup_crashed() {
+            super::DB::destroy(&Options::default(), "crashed_test_data".to_string())
+                .expect("Cannot destroy crash test db.");
+            fs::remove_file("crashed_test_wal.db").expect("Can't clean up crashed wal file.");
         }
 
         #[test]
@@ -234,26 +269,33 @@ mod db {
             keyvals.insert("hello".to_string(), "world".to_string());
             keyvals.insert("foo".to_string(), "bar".to_string());
             multi_set(&mut db, keyvals).unwrap();
-            assert_eq!(get(&db, "hello".to_string()).unwrap(), "world".to_string());
-            assert_eq!(get(&db, "foo".to_string()).unwrap(), "bar".to_string());
+            assert_eq!(
+                get(&mut db, "hello".to_string()).unwrap(),
+                "world".to_string()
+            );
+            assert_eq!(get(&mut db, "foo".to_string()).unwrap(), "bar".to_string());
         }
 
         #[test]
         fn test_get() {
             let mut db = setup();
             set(&mut db, String::from("hello"), String::from("world")).unwrap();
-            let db = db;
-            let res = get(&db, String::from("hello")).unwrap();
+            let res = get(&mut db, String::from("hello")).unwrap();
             assert_eq!(res, String::from("world"));
         }
 
         #[test]
         fn test_crashed() {
-            let db = setup_crashed();
-            assert_eq!(
-                get(&db, String::from("hello")),
-                Err("Not found!".to_string())
-            );
+            {
+                let mut db = setup_crashed();
+                assert_eq!(
+                    get(&mut db, String::from("hello")),
+                    Err("Not found!".to_string())
+                );
+                let res = get(&mut db, String::from("good_hello")).unwrap();
+                assert_eq!(res, String::from("good_world"));
+            }
+            cleanup_crashed();
         }
     }
 }

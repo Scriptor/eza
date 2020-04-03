@@ -5,4 +5,6 @@ data.db
 data/
 test_data/
 test_wal.db
+crashed_test_data/
+crashed_test_wal.db
 wal.db
