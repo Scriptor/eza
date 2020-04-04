@@ -9,11 +9,14 @@ It is currently ACID-compliant (for some definition of ACID compliance :) ):
 
 Atomic     - Currently supported with a primitive write-ahead log that is checked to
              see which transactions have successfully committed.
+
 Consistent - Provided mostly by accident since there's not much that can be
              inconsistent right now.
+
 Isolation  - A rough MVCC implementation offers snapshot isolation. Remaining
              work here is adding a 'PENDING' transaction state and maybe storing
              the transaction info itself on disk rather than keeping it in memory.
+
 Durability - Uses RocksDB for the storage engine to make writes durable.
 
 ## Rationale
