@@ -3,7 +3,6 @@
 extern crate rocket;
 
 use rocket::State;
-use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::sync::RwLock;
 
@@ -28,34 +27,29 @@ mod db {
         id: String,
     }
 
-    pub fn wal_new_tx<'a>(db: &'a mut DBState) -> WalTx {
+    pub fn wal_new_tx(db: &mut DBState) -> WalTx {
         let id = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("Time went backwards.")
             .as_nanos()
             .to_string();
-        let tx = WalTx { id: id };
+        let tx = WalTx { id };
         let mut w = BufWriter::new(&db.wal);
-        writeln!(w, "{}:{}", tx.id, false).unwrap();
+        writeln!(w, "{}:false", tx.id).unwrap();
         db.txs.insert(tx.id.clone(), false);
         w.flush().unwrap();
         tx
     }
 
-    pub fn wal_append_set<'a>(
-        db: &DBState,
-        tx: &WalTx,
-        key: &'a String,
-        value: &'a String,
-    ) -> io::Result<()> {
+    pub fn wal_append_set(db: &DBState, tx: &WalTx, key: &str, value: &str) -> io::Result<()> {
         let mut w = BufWriter::new(&db.wal);
         writeln!(w, "{}:{}:{}", tx.id, &key, &value).unwrap();
         w.flush()
     }
 
-    pub fn wal_commit<'a>(db: &mut DBState, tx: &WalTx) -> io::Result<()> {
+    pub fn wal_commit(db: &mut DBState, tx: &WalTx) -> io::Result<()> {
         let mut w = BufWriter::new(&db.wal);
-        writeln!(w, "{}:{}", tx.id, true).unwrap();
+        writeln!(w, "{}:true", tx.id).unwrap();
         db.txs.insert(tx.id.clone(), true);
         w.flush()
     }
@@ -65,7 +59,7 @@ mod db {
         let wal_buf = io::BufReader::new(&wal_file);
         for line in wal_buf.lines() {
             let entry = line.unwrap();
-            let parts: Vec<&str> = entry.split(":").collect();
+            let parts: Vec<&str> = entry.split(':').collect();
             if parts.len() == 2 {
                 let tx_id = parts[0].to_owned();
                 if parts[1] == "true" {
@@ -82,7 +76,7 @@ mod db {
         for (key, value) in db_iter {
             let data = String::from(str::from_utf8(&*key).unwrap());
             let tx_id = data_tx_id(&data);
-            let value = String::from(bytes_to_string(&value));
+            let value = bytes_to_string(&value);
             match txs.get(&tx_id) {
                 Some(true) => map.insert(String::from(str::from_utf8(&*key).unwrap()), value),
                 _ => None,
@@ -90,17 +84,17 @@ mod db {
         }
 
         DBState {
-            map: map,
-            txs: txs,
+            map,
+            txs,
             wal: wal_file,
-            db: db,
+            db,
         }
     }
 
     fn persist_entry(
         db: &DBState,
-        key: &String,
-        value: &String,
+        key: &str,
+        value: &str,
         tx: &WalTx,
     ) -> Result<(), rocksdb::Error> {
         let key = format!("{}:{}", key, tx.id);
@@ -111,13 +105,13 @@ mod db {
         String::from(str::from_utf8(v).unwrap())
     }
 
-    fn data_tx_id(val: &String) -> String {
-        let parts: Vec<&str> = val.split(":").collect();
+    fn data_tx_id(val: &str) -> String {
+        let parts: Vec<&str> = val.split(':').collect();
         parts[1].to_owned()
     }
 
-    fn data_value(val: &String) -> String {
-        let parts: Vec<&str> = val.split(":").collect();
+    fn data_value(val: &str) -> String {
+        let parts: Vec<&str> = val.split(':').collect();
         parts[0].to_owned()
     }
 
@@ -127,15 +121,14 @@ mod db {
         let tx = wal_new_tx(&mut db);
         wal_append_set(&db, &tx, &key, &value).unwrap();
         let result_str = format!("Set key: {} to value: {}", key, value);
-        let result = match persist_entry(db, &key, &value, &tx) {
+        match persist_entry(db, &key, &value, &tx) {
             Ok(_) => {
                 wal_commit(&mut db, &tx).unwrap();
                 db.map.insert(key, value);
                 Ok(result_str)
             }
             _ => Err(String::from("Failed to write")),
-        };
-        result
+        }
     }
 
     pub fn multi_set(
