@@ -83,7 +83,6 @@ mod db {
             let data = String::from(str::from_utf8(&*key).unwrap());
             let tx_id = data_tx_id(&data);
             let value = String::from(bytes_to_string(&value));
-            println!("Loading {} -> {}", data, value);
             match txs.get(&tx_id) {
                 Some(true) => map.insert(String::from(str::from_utf8(&*key).unwrap()), value),
                 _ => None,
@@ -159,7 +158,6 @@ mod db {
     pub fn get(mut db: &mut DBState, key: String) -> Result<String, String> {
         let tx = wal_new_tx(db);
 
-        println!("Looking for: {}", key);
         let null_term_key = format!("{}:9", key);
         let db_iter = db.db.iterator(IteratorMode::From(
             null_term_key.as_bytes(),
@@ -179,7 +177,6 @@ mod db {
 
             if key == k && (write_tx_id < tx.id && is_committed) {
                 let value = bytes_to_string(&value);
-                println!("{}", value);
                 return Ok(value);
             }
         }
