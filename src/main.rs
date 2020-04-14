@@ -188,6 +188,36 @@ mod db {
         Err(String::from("Not found!"))
     }
 
+    pub fn scan(mut db: &mut DBState, start: String, end: String) -> Vec<String> {
+        // Start with the first key found
+        // Keep going until the end key found
+        let tx = wal_new_tx(db);
+        let mut values: Vec<String> = Vec::new();
+        let null_term_end = format!("{}:9", end);
+        let db_iter = db.db.iterator(IteratorMode::From(
+            null_term_end.as_bytes(),
+            Direction::Reverse,
+        ));
+        for (k, value) in db_iter {
+            let k = bytes_to_string(&k);
+            let write_tx_id = data_tx_id(&k);
+            let k = data_value(&k);
+
+            if k < start {
+                break;
+            }
+
+            let is_committed = *db.txs.get(&write_tx_id).unwrap_or(&false);
+            if write_tx_id < tx.id && is_committed {
+                let value = bytes_to_string(&value);
+                values.push(value)
+            }
+        }
+        wal_commit(&mut db, &tx).unwrap();
+        values.reverse();
+        values
+    }
+
     pub fn mem_get(db: &DBState, key: String) -> Result<String, String> {
         match db.map.get(&key) {
             Some(s) => Ok(s.to_string()),
@@ -295,6 +325,23 @@ mod db {
                 set(&mut db, String::from("hello"), String::from("world")).unwrap();
                 let res = get(&mut db, String::from("hello")).unwrap();
                 assert_eq!(res, String::from("world"));
+            }
+            cleanup();
+        }
+
+        #[test]
+        fn test_scan() {
+            {
+                let mut db = setup();
+                let mut keyvals = HashMap::new();
+                keyvals.insert("1".to_string(), "first".to_string());
+                keyvals.insert("2".to_string(), "second".to_string());
+                keyvals.insert("3".to_string(), "third".to_string());
+                keyvals.insert("4".to_string(), "fourth".to_string());
+                keyvals.insert("5".to_string(), "fifth".to_string());
+                multi_set(&mut db, keyvals).unwrap();
+                let res = scan(&mut db, "2".to_string(), "3".to_string());
+                assert_eq!(res, vec!["second".to_string(), "third".to_string()]);
             }
             cleanup();
         }
