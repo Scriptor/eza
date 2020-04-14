@@ -250,6 +250,11 @@ mod db {
             state
         }
 
+        fn cleanup() {
+            super::DB::destroy(&Options::default(), "test_data".to_string())
+                .expect("Cannot destroy main test db.");
+            fs::remove_file("test_wal.db").expect("Can't clean up main test wal file.");
+        }
         fn cleanup_crashed() {
             super::DB::destroy(&Options::default(), "crashed_test_data".to_string())
                 .expect("Cannot destroy crash test db.");
@@ -258,31 +263,40 @@ mod db {
 
         #[test]
         fn test_set() {
-            let mut db = setup();
-            let res = set(&mut db, String::from("hello"), String::from("world")).unwrap();
-            assert_eq!(res, "Set key: hello to value: world");
+            {
+                let mut db = setup();
+                let res = set(&mut db, String::from("hello"), String::from("world")).unwrap();
+                assert_eq!(res, "Set key: hello to value: world");
+            }
+            cleanup();
         }
 
         #[test]
         fn test_multi_set() {
-            let mut db = setup();
-            let mut keyvals = HashMap::new();
-            keyvals.insert("hello".to_string(), "world".to_string());
-            keyvals.insert("foo".to_string(), "bar".to_string());
-            multi_set(&mut db, keyvals).unwrap();
-            assert_eq!(
-                get(&mut db, "hello".to_string()).unwrap(),
-                "world".to_string()
-            );
-            assert_eq!(get(&mut db, "foo".to_string()).unwrap(), "bar".to_string());
+            {
+                let mut db = setup();
+                let mut keyvals = HashMap::new();
+                keyvals.insert("hello".to_string(), "world".to_string());
+                keyvals.insert("foo".to_string(), "bar".to_string());
+                multi_set(&mut db, keyvals).unwrap();
+                assert_eq!(
+                    get(&mut db, "hello".to_string()).unwrap(),
+                    "world".to_string()
+                );
+                assert_eq!(get(&mut db, "foo".to_string()).unwrap(), "bar".to_string());
+            }
+            cleanup();
         }
 
         #[test]
         fn test_get() {
-            let mut db = setup();
-            set(&mut db, String::from("hello"), String::from("world")).unwrap();
-            let res = get(&mut db, String::from("hello")).unwrap();
-            assert_eq!(res, String::from("world"));
+            {
+                let mut db = setup();
+                set(&mut db, String::from("hello"), String::from("world")).unwrap();
+                let res = get(&mut db, String::from("hello")).unwrap();
+                assert_eq!(res, String::from("world"));
+            }
+            cleanup();
         }
 
         #[test]
