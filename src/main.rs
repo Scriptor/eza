@@ -159,10 +159,11 @@ mod db {
         let tx = wal_new_tx(db);
 
         println!("Looking for: {}", key);
-        let null_key = format!("{}:9", key);
-        let db_iter = db
-            .db
-            .iterator(IteratorMode::From(null_key.as_bytes(), Direction::Reverse));
+        let null_term_key = format!("{}:9", key);
+        let db_iter = db.db.iterator(IteratorMode::From(
+            null_term_key.as_bytes(),
+            Direction::Reverse,
+        ));
         for (k, value) in db_iter {
             let k = bytes_to_string(&k);
 
