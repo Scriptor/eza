@@ -12,15 +12,21 @@ mod db {
     use std::fs::File;
     use std::io::{self, BufRead, BufWriter, Write};
     use std::str;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
     // Uuid may be reintroduced later with better tx id's
     //use uuid::Uuid;
+
+    pub struct TableInfo {
+        pub next_id: AtomicU64,
+    }
 
     pub struct DBState {
         pub map: HashMap<String, String>,
         pub txs: HashMap<String, bool>, // TODO: Commit state should be enum
         pub db: DB,
         pub wal: super::File,
+        pub tables: HashMap<String, TableInfo>,
     }
 
     pub struct WalTx {
@@ -83,11 +89,14 @@ mod db {
             };
         }
 
+        let tables = HashMap::new();
+
         DBState {
             map,
             txs,
             wal: wal_file,
             db,
+            tables,
         }
     }
 
@@ -217,6 +226,61 @@ mod db {
         }
     }
 
+    fn create_table<'a>(db: &'a mut DBState, table: &str) -> &'a TableInfo {
+        let table_info = TableInfo {
+            next_id: AtomicU64::new(0),
+        };
+        db.tables.insert(table.to_string(), table_info);
+        db.tables
+            .get(table)
+            .expect("Recently inserted table not found.")
+    }
+
+    fn table_next_id(mut db: &mut DBState, table: &str) -> u64 {
+        let table_info = match db.tables.get(table) {
+            Some(table_info) => table_info,
+            None => create_table(&mut db, table),
+        };
+        table_info.next_id.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn col(s: &str) -> String {
+        let parts: Vec<&str> = s.split(':').collect();
+        parts[2].to_owned()
+    }
+
+    pub fn insert_row(
+        mut db: &mut DBState,
+        table: &str,
+        colvals: HashMap<String, String>,
+    ) -> Result<String, String> {
+        let tx = wal_new_tx(db);
+        let id = table_next_id(&mut db, table);
+        persist_entry(db, &format!("{}:id", table), &id.to_string(), &tx)
+            .expect("Could not insert id");
+        for (col, value) in colvals.iter() {
+            let encoded_key = format!("{}:{}:{}", table, id, col);
+            persist_entry(db, &encoded_key, value, &tx).unwrap();
+        }
+        wal_commit(&mut db, &tx).unwrap();
+        Ok("Row successfully inserted".to_string())
+    }
+
+    pub fn get_row(mut db: &mut DBState, table: &str, id: u64) -> HashMap<String, String> {
+        let tx = wal_new_tx(db);
+        let search_k = format!("{}:{}", table, id);
+        let mut record = HashMap::new();
+        let mut db_iter = db.db.iterator(IteratorMode::End);
+        db_iter.set_mode(IteratorMode::From(search_k.as_bytes(), Direction::Reverse));
+        for (k, value) in db_iter {
+            let k = bytes_to_string(&k);
+            let col = col(&k);
+            record.insert(col, bytes_to_string(&value));
+        }
+        wal_commit(&mut db, &tx).unwrap();
+        record
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -306,6 +370,27 @@ mod db {
                     "world".to_string()
                 );
                 assert_eq!(get(&mut db, "foo".to_string()).unwrap(), "bar".to_string());
+            }
+            cleanup();
+        }
+
+        #[test]
+        fn test_rows() {
+            {
+                let mut db = setup();
+                let mut record = HashMap::new();
+                record.insert("name".to_string(), "charles darwin".to_string());
+                record.insert("job".to_string(), "biologist".to_string());
+                insert_row(&mut db, "people", record).expect("Failed to insert row.");
+                let rec = get_row(&mut db, "people", 1);
+                assert_eq!(
+                    rec.get("name").expect("Failed to find name in record"),
+                    "charles darwin"
+                );
+                assert_eq!(
+                    rec.get("job").expect("Failed to find job in record"),
+                    "biologist"
+                );
             }
             cleanup();
         }
