@@ -9,7 +9,7 @@ use std::sync::RwLock;
 
 mod db {
     use rocksdb::{Direction, IteratorMode, DB};
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::fs::File;
     use std::io::{self, BufRead, BufWriter, Write};
     use std::str;
@@ -89,6 +89,7 @@ mod db {
                 _ => None,
             };
         }
+
         DBState {
             map: map,
             txs: txs,
@@ -169,7 +170,6 @@ mod db {
 
             let write_tx_id = data_tx_id(&k);
             let k = data_value(&k);
-            println!("Found: {} with tx_id: {}", k, write_tx_id);
             // TODO: Handle the case where the write tx is PENDING,
             //       may need a mutex
             let is_committed = match db.txs.get(&write_tx_id) {
@@ -198,6 +198,7 @@ mod db {
             null_term_end.as_bytes(),
             Direction::Reverse,
         ));
+        let mut found_keys = HashSet::new();
         for (k, value) in db_iter {
             let k = bytes_to_string(&k);
             let write_tx_id = data_tx_id(&k);
@@ -208,8 +209,9 @@ mod db {
             }
 
             let is_committed = *db.txs.get(&write_tx_id).unwrap_or(&false);
-            if write_tx_id < tx.id && is_committed {
+            if write_tx_id < tx.id && is_committed && !found_keys.contains(&k) {
                 let value = bytes_to_string(&value);
+                found_keys.insert(k.clone());
                 values.push(value)
             }
         }
@@ -334,6 +336,7 @@ mod db {
             {
                 let mut db = setup();
                 let mut keyvals = HashMap::new();
+                set(&mut db, "3".to_string(), "should-be-ignored".to_string()).unwrap();
                 keyvals.insert("1".to_string(), "first".to_string());
                 keyvals.insert("2".to_string(), "second".to_string());
                 keyvals.insert("3".to_string(), "third".to_string());
