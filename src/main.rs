@@ -12,21 +12,17 @@ mod db {
     use std::fs::File;
     use std::io::{self, BufRead, BufWriter, Write};
     use std::str;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
     // Uuid may be reintroduced later with better tx id's
     //use uuid::Uuid;
-
-    pub struct TableInfo {
-        pub next_id: AtomicU64,
-    }
 
     pub struct DBState {
         pub map: HashMap<String, String>,
         pub txs: HashMap<String, bool>, // TODO: Commit state should be enum
         pub db: DB,
         pub wal: super::File,
-        pub tables: HashMap<String, TableInfo>,
+        pub locks: HashMap<String, Mutex<bool>>,
     }
 
     pub struct WalTx {
@@ -60,6 +56,10 @@ mod db {
         w.flush()
     }
 
+    fn is_meta(k: &str) -> bool {
+        k.starts_with("**")
+    }
+
     pub fn initialize_db(db_path: String, wal_file: File) -> DBState {
         let mut txs = HashMap::new();
         let wal_buf = io::BufReader::new(&wal_file);
@@ -81,22 +81,25 @@ mod db {
         let mut map: HashMap<String, String> = HashMap::new();
         for (key, value) in db_iter {
             let data = String::from(str::from_utf8(&*key).unwrap());
+            let key = String::from(str::from_utf8(&*key).unwrap());
+            if is_meta(&key) {continue}
+
             let tx_id = data_tx_id(&data);
             let value = bytes_to_string(&value);
             match txs.get(&tx_id) {
-                Some(true) => map.insert(String::from(str::from_utf8(&*key).unwrap()), value),
+                Some(true) => map.insert(key, value),
                 _ => None,
             };
         }
 
-        let tables = HashMap::new();
+        let locks = HashMap::new();
 
         DBState {
             map,
             txs,
             wal: wal_file,
             db,
-            tables,
+            locks,
         }
     }
 
@@ -122,6 +125,18 @@ mod db {
     fn data_value(val: &str) -> String {
         let parts: Vec<&str> = val.split(':').collect();
         parts[0].to_owned()
+    }
+
+    pub fn get_mutex<'a>(
+        locks: &'a mut HashMap<String, Mutex<bool>>,
+        key: &str,
+    ) -> &'a Mutex<bool> {
+        if !locks.contains_key(key) {
+            let mutex = Mutex::new(true);
+            locks.insert(key.to_string(), mutex);
+        }
+
+        locks.get(key).unwrap()
     }
 
     pub fn set(mut db: &mut DBState, key: String, value: String) -> Result<String, String> {
@@ -226,22 +241,35 @@ mod db {
         }
     }
 
-    fn create_table<'a>(db: &'a mut DBState, table: &str) -> &'a TableInfo {
-        let table_info = TableInfo {
-            next_id: AtomicU64::new(0),
+    fn table_next_id(db: &mut DBState, table: &str) -> u64 {
+        let auto_inc_key = format!("**autoincrement**{}", table);
+        let mutex = get_mutex(&mut db.locks, &auto_inc_key);
+        let next_id = {
+            let _m = mutex.lock().unwrap();
+            let next_id = match db.db.get(auto_inc_key.as_bytes()).unwrap() {
+                Some(v) => bytes_to_string(&v),
+                None => "0".to_string(),
+            };
+            let next_id: u64 = next_id.parse().unwrap();
+            next_id
         };
-        db.tables.insert(table.to_string(), table_info);
-        db.tables
-            .get(table)
-            .expect("Recently inserted table not found.")
+        db.db
+            .put(
+                auto_inc_key.as_bytes(),
+                format!("{}", next_id + 1).as_bytes(),
+            )
+            .expect("Failed to write new auto inc id.");
+        next_id
     }
 
-    fn table_next_id(mut db: &mut DBState, table: &str) -> u64 {
-        let table_info = match db.tables.get(table) {
-            Some(table_info) => table_info,
-            None => create_table(&mut db, table),
-        };
-        table_info.next_id.fetch_add(1, Ordering::Relaxed)
+    fn table_name(s: &str) -> String {
+        let parts: Vec<&str> = s.split(':').collect();
+        parts[1].to_owned()
+    }
+
+    fn primary_key(s: &str) -> u64 {
+        let parts: Vec<&str> = s.split(':').collect();
+        parts[1].to_owned().parse().unwrap()
     }
 
     fn col(s: &str) -> String {
@@ -249,10 +277,11 @@ mod db {
         parts[2].to_owned()
     }
 
+
     pub fn insert_row(
         mut db: &mut DBState,
         table: &str,
-        colvals: HashMap<String, String>,
+        colvals: &HashMap<String, String>,
     ) -> Result<String, String> {
         let tx = wal_new_tx(db);
         let id = table_next_id(&mut db, table);
@@ -268,14 +297,22 @@ mod db {
 
     pub fn get_row(mut db: &mut DBState, table: &str, id: u64) -> HashMap<String, String> {
         let tx = wal_new_tx(db);
-        let search_k = format!("{}:{}", table, id);
+        // Need to add one to id to force rocksdb to start search
+        // after the last matching key.
+        let search_k = format!("{}:{}", table, id+1);
         let mut record = HashMap::new();
         let mut db_iter = db.db.iterator(IteratorMode::End);
         db_iter.set_mode(IteratorMode::From(search_k.as_bytes(), Direction::Reverse));
         for (k, value) in db_iter {
             let k = bytes_to_string(&k);
-            let col = col(&k);
-            record.insert(col, bytes_to_string(&value));
+            if is_meta(&k) {continue}
+            let pk = primary_key(&k);
+            if pk == id {
+                let col = col(&k);
+                record.insert(col, bytes_to_string(&value));
+            } else if pk < id {
+                break;
+            }
         }
         wal_commit(&mut db, &tx).unwrap();
         record
@@ -378,18 +415,26 @@ mod db {
         fn test_rows() {
             {
                 let mut db = setup();
-                let mut record = HashMap::new();
-                record.insert("name".to_string(), "charles darwin".to_string());
-                record.insert("job".to_string(), "biologist".to_string());
-                insert_row(&mut db, "people", record).expect("Failed to insert row.");
+                let mut record0 = HashMap::new();
+                record0.insert("name".to_string(), "charles darwin".to_string());
+                record0.insert("job".to_string(), "biologist".to_string());
+                let mut record1 = HashMap::new();
+                record1.insert("name".to_string(), "rosalind franklin".to_string());
+                record1.insert("job".to_string(), "chemist".to_string());
+                let mut record2 = HashMap::new();
+                record2.insert("name".to_string(), "carmen sandiego".to_string());
+                record2.insert("job".to_string(), "incognito person".to_string());
+                insert_row(&mut db, "people", &record0).expect("Failed to insert row.");
+                insert_row(&mut db, "people", &record1).expect("Failed to insert row.");
+                insert_row(&mut db, "people", &record2).expect("Failed to insert row.");
                 let rec = get_row(&mut db, "people", 1);
                 assert_eq!(
                     rec.get("name").expect("Failed to find name in record"),
-                    "charles darwin"
+                    "rosalind franklin"
                 );
                 assert_eq!(
                     rec.get("job").expect("Failed to find job in record"),
-                    "biologist"
+                    "chemist"
                 );
             }
             cleanup();
