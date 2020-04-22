@@ -287,6 +287,27 @@ mod db {
             .to_string()
     }
 
+    fn is_committed(db: &DBState, tx_id: &str) -> bool {
+        match db.txs.get(tx_id) {
+            Some(b) => *b,
+            _ => false,
+        }
+    }
+
+    fn insert_secondary_index(
+        db: &DBState,
+        table: &str,
+        col: &str,
+        val: &str,
+        id: u64,
+        tx: &WalTx,
+    ) -> Result<String, String> {
+        let encoded_key = format!("{}:{}:{}", table, col, val);
+        persist_entry(&db, &encoded_key, &id.to_string(), tx)
+            .expect("Failed to persist secondary index");
+        Ok("Successfully inserted secondary index".to_string())
+    }
+
     pub fn insert_row(
         mut db: &mut DBState,
         table: &str,
@@ -300,6 +321,7 @@ mod db {
         for (col, value) in colvals.iter() {
             let encoded_key = format!("{}:{}:{}", table, id, col);
             persist_entry(db, &encoded_key, value, &tx).unwrap();
+            insert_secondary_index(&db, table, col, value, id, &tx).unwrap();
         }
         wal_commit(&mut db, &tx).unwrap();
         Ok(id)
@@ -353,6 +375,34 @@ mod db {
         }
         wal_commit(&mut db, &tx).unwrap();
         record
+    }
+
+    pub fn get_by_col(
+        mut db: &mut DBState,
+        table: &str,
+        col: String,
+        value: String,
+    ) -> Option<HashMap<String, String>> {
+        // find a key that matches format:
+        // table:col:value
+        // Scan to most recent entry that has tx id less than current
+        let search_k = format!("{}:{}:{}:9", table, col, value);
+        let mut db_iter = db.db.iterator(IteratorMode::End);
+        db_iter.set_mode(IteratorMode::From(search_k.as_bytes(), Direction::Reverse));
+        for (k, value) in db_iter {
+            let k = bytes_to_string(&k);
+            if is_meta(&k) {
+                continue;
+            }
+            let tx_id = row_tx_id(&k);
+            let is_com = is_committed(&db, &tx_id);
+            if is_com {
+                let row_id: u64 = bytes_to_string(&value).parse().unwrap();
+                return Some(get_row(&mut db, table, row_id));
+            }
+        }
+
+        None
     }
 
     #[cfg(test)]
@@ -490,6 +540,21 @@ mod db {
             update_row(&mut db, "testtable", id, &record).unwrap();
             let rec = get_row(&mut db, "testtable", id);
             assert_eq!(rec.get("foo").unwrap(), "baz");
+        }
+
+        #[test]
+        fn test_get_by_col() {
+            let mut db = setup();
+            let mut record0 = HashMap::new();
+            record0.insert("foo".to_string(), "bar".to_string());
+            record0.insert("other_key".to_string(), "other_value".to_string());
+            insert_row(&mut db, "testtable", &record0).unwrap();
+            let mut record1 = HashMap::new();
+            record1.insert("foo".to_string(), "not-looked-for".to_string());
+            record1.insert("other_key".to_string(), "not-loooked-for".to_string());
+            insert_row(&mut db, "testtable", &record1).unwrap();
+            let rec = get_by_col(&mut db, "testtable", "foo".to_string(), "bar".to_string()).unwrap();
+            assert_eq!(rec.get("other_key").unwrap(), "other_value");
         }
 
         #[test]
