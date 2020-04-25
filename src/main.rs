@@ -12,7 +12,7 @@ mod db {
     use std::fs::File;
     use std::io::{self, BufRead, BufWriter, Write};
     use std::str;
-    use std::sync::{Mutex};
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
     // Uuid may be reintroduced later with better tx id's
     //use uuid::Uuid;
@@ -82,7 +82,9 @@ mod db {
         for (key, value) in db_iter {
             let data = String::from(str::from_utf8(&*key).unwrap());
             let key = String::from(str::from_utf8(&*key).unwrap());
-            if is_meta(&key) {continue}
+            if is_meta(&key) {
+                continue;
+            }
 
             let tx_id = data_tx_id(&data);
             let value = bytes_to_string(&value);
@@ -277,14 +279,22 @@ mod db {
         parts[2].to_owned()
     }
 
+    fn row_tx_id(s: &str) -> String {
+        let parts: Vec<&str> = s.split(':').collect();
+        parts
+            .last()
+            .expect("Could not get tx id from row-entry key")
+            .to_string()
+    }
 
     pub fn insert_row(
         mut db: &mut DBState,
         table: &str,
         colvals: &HashMap<String, String>,
-    ) -> Result<String, String> {
+    ) -> Result<u64, String> {
         let tx = wal_new_tx(db);
         let id = table_next_id(&mut db, table);
+        // TODO: Do I really need to insert an id entry?
         persist_entry(db, &format!("{}:id", table), &id.to_string(), &tx)
             .expect("Could not insert id");
         for (col, value) in colvals.iter() {
@@ -292,24 +302,51 @@ mod db {
             persist_entry(db, &encoded_key, value, &tx).unwrap();
         }
         wal_commit(&mut db, &tx).unwrap();
-        Ok("Row successfully inserted".to_string())
+        Ok(id)
+    }
+
+    pub fn update_row(
+        mut db: &mut DBState,
+        table: &str,
+        id: u64,
+        colvals: &HashMap<String, String>,
+    ) -> Result<String, String> {
+        let tx = wal_new_tx(db);
+        for (col, value) in colvals.iter() {
+            let encoded_key = format!("{}:{}:{}", table, id, col);
+            persist_entry(&db, &encoded_key, value, &tx).expect("Could not update record");
+        }
+        wal_commit(&mut db, &tx).expect("Failed to commit update.");
+        Ok("Row successfully updated".to_string())
     }
 
     pub fn get_row(mut db: &mut DBState, table: &str, id: u64) -> HashMap<String, String> {
         let tx = wal_new_tx(db);
         // Need to add one to id to force rocksdb to start search
         // after the last matching key.
-        let search_k = format!("{}:{}", table, id+1);
+        let search_k = format!("{}:{}", table, id + 1);
         let mut record = HashMap::new();
         let mut db_iter = db.db.iterator(IteratorMode::End);
         db_iter.set_mode(IteratorMode::From(search_k.as_bytes(), Direction::Reverse));
         for (k, value) in db_iter {
             let k = bytes_to_string(&k);
-            if is_meta(&k) {continue}
+            if is_meta(&k) {
+                continue;
+            }
             let pk = primary_key(&k);
             if pk == id {
                 let col = col(&k);
-                record.insert(col, bytes_to_string(&value));
+                let tx_id = row_tx_id(&k);
+                let is_committed = match db.txs.get(&tx_id) {
+                    Some(b) => *b,
+                    _ => false,
+                };
+
+                // We insert the newest value for a col first, so we should not
+                // overwrite any existing col entries
+                if !record.contains_key(&col) && is_committed {
+                    record.insert(col, bytes_to_string(&value));
+                }
             } else if pk < id {
                 break;
             }
@@ -438,6 +475,21 @@ mod db {
                 );
             }
             cleanup();
+        }
+
+        #[test]
+        fn test_update_row() {
+            let mut db = setup();
+            let mut record = HashMap::new();
+            record.insert("foo".to_string(), "bar".to_string());
+            let id = insert_row(&mut db, "testtable", &record).unwrap();
+            let rec = get_row(&mut db, "testtable", id);
+            assert_eq!(rec.get("foo").unwrap(), "bar");
+
+            record.insert("foo".to_string(), "baz".to_string());
+            update_row(&mut db, "testtable", id, &record).unwrap();
+            let rec = get_row(&mut db, "testtable", id);
+            assert_eq!(rec.get("foo").unwrap(), "baz");
         }
 
         #[test]
