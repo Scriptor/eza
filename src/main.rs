@@ -405,6 +405,33 @@ mod db {
         None
     }
 
+    // I want to join table A with table B based on:
+    //   tableA.some_column = tableB.other_column
+    //   e.g. friends.name = person.name
+    // id | name | address
+    // 1  | foo  | 123 main st
+    // 2  | bar  | 3455 main st
+    // 3  | foo  | 12342 main st
+    //
+    // id | name | language
+    // 10 | foo  | french
+
+    pub fn inner_join(
+        db: &DBState,
+        tableA: &str,
+        colA:   &str,
+        tableB: &str,
+        colB:   &str
+    ) -> Vec<HashMap<String, String>> {
+        // Iterate through table A
+        //   Build hashmap where key is (colA, value} => (id...)
+        // Iterate through table B
+        //   Build hashmap where key is (colB, value} => (id...)
+        // With smallest hashmap of the two:
+        //   iterate through hashmap pairs
+        //   find matching tuple in other hashmap
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
