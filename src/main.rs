@@ -266,7 +266,7 @@ mod db {
 
     fn table_name(s: &str) -> String {
         let parts: Vec<&str> = s.split(':').collect();
-        parts[1].to_owned()
+        parts[0].to_owned()
     }
 
     fn primary_key(s: &str) -> u64 {
@@ -430,6 +430,55 @@ mod db {
         // With smallest hashmap of the two:
         //   iterate through hashmap pairs
         //   find matching tuple in other hashmap
+        let tx = wal_new_tx(db);
+        let mut output: Vec = Vec::new();
+
+        let null_term_end = format!("{}:{}:9", tableA, colA);
+        let db_iter = db.db.iterator(IteratorMode::From(
+            null_term_end.as_bytes(),
+            Direction::Reverse,
+        ));
+
+        let mut left = HashMap::new();
+        for (sec_index_k, id) in db_iter {
+            // Todo: check that data has been committed
+            let val = col(bytes_to_string(&sec_index_k));
+            if left.contains_key(val) {
+                left[&val].push(id);
+            }
+            else {
+                left[&val] = Vec::from([id]);
+            }
+        }
+
+        let null_term_end = format!("{}:{}:9", tableB, colB);
+        let db_iter = db.db.iterator(IteratorMode::From(
+            null_term_end.as_bytes(),
+            Direction::Reverse,
+        ));
+
+        let mut right = HashMap::new();
+        for (sec_index_k, id) in db_iter {
+            // Todo: check that data has been committed
+            let val = col(bytes_to_string(&sec_index_k));
+            if right.contains_key(val) {
+                right[&val].push(id);
+            }
+            else {
+                right[&val] = Vec::from([id]);
+            }
+
+        }
+        let smaller: HashMap<String, String>;
+        if left.len() < right.len() {
+            smaller = left;
+        }
+        else {
+            smaller = right;
+        }
+        
+        wal_commit(&mut db, &tx).unwrap();
+        output
     }
 
     #[cfg(test)]
